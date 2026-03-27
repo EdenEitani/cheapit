@@ -23,7 +23,10 @@ async function checkOneBooking(
     .insert({
       booking_id: booking.id,
       price_found: result?.price ?? null,
-      room_description_found: result?.roomDescription ?? null,
+      // store hotel name found + exact match flag so UI can show mismatch warning
+      room_description_found: result
+        ? `${result.exactHotelMatch ? 'match' : 'fuzzy'}::${result.hotelNameFound}`
+        : null,
       platform_found: result?.platform ?? null,
       url: result?.url ?? null,
       is_cheaper: isCheaper,

@@ -246,38 +246,68 @@ export default function BookingDetailPage() {
                     <TableHead>Checked at</TableHead>
                     <TableHead>Price / night</TableHead>
                     <TableHead>Platform</TableHead>
+                    <TableHead>Match</TableHead>
                     <TableHead>Status</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {checks.map((c) => (
-                    <TableRow key={c.id}>
-                      <TableCell className="text-sm text-gray-600">
-                        {format(parseISO(c.checked_at), 'd MMM yyyy HH:mm')}
-                      </TableCell>
-                      <TableCell className="font-medium">
-                        {c.price_found != null ? `${sym}${Math.round(c.price_found)}` : '—'}
-                      </TableCell>
-                      <TableCell className="text-sm text-gray-500">
-                        {c.url ? (
-                          <a href={c.url} target="_blank" rel="noopener noreferrer" className="hover:underline text-blue-600">
-                            {c.platform_found ?? '—'}
-                          </a>
-                        ) : (
-                          c.platform_found ?? '—'
-                        )}
-                      </TableCell>
-                      <TableCell>
-                        {c.is_cheaper ? (
-                          <Badge className="bg-green-100 text-green-700 border-green-200">Cheaper</Badge>
-                        ) : c.price_found != null ? (
-                          <Badge variant="secondary">Same / higher</Badge>
-                        ) : (
-                          <Badge variant="outline">No result</Badge>
-                        )}
-                      </TableCell>
-                    </TableRow>
-                  ))}
+                  {checks.map((c) => {
+                    // Parse stored room_description_found: "match::Hotel Name" or "fuzzy::Hotel Name"
+                    const rdRaw = c.room_description_found ?? ''
+                    const isFuzzy = rdRaw.startsWith('fuzzy::')
+                    const hotelFound = rdRaw.includes('::') ? rdRaw.split('::')[1] : rdRaw
+
+                    return (
+                      <TableRow key={c.id}>
+                        <TableCell className="text-sm text-gray-600">
+                          {format(parseISO(c.checked_at), 'd MMM yyyy HH:mm')}
+                        </TableCell>
+                        <TableCell className="font-medium">
+                          {c.price_found != null ? `${sym}${Math.round(c.price_found)}` : '—'}
+                        </TableCell>
+                        <TableCell className="text-sm text-gray-500">
+                          {c.url ? (
+                            <a href={c.url} target="_blank" rel="noopener noreferrer" className="hover:underline text-blue-600">
+                              {c.platform_found ?? '—'}
+                            </a>
+                          ) : (
+                            c.platform_found ?? '—'
+                          )}
+                        </TableCell>
+                        <TableCell className="text-sm">
+                          {c.price_found != null ? (
+                            isFuzzy ? (
+                              <span
+                                className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs bg-yellow-50 text-yellow-700 border border-yellow-200 cursor-help"
+                                title={`Found: "${hotelFound}" — may not be the same hotel`}
+                              >
+                                ⚠️ Fuzzy
+                              </span>
+                            ) : (
+                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs bg-blue-50 text-blue-700 border border-blue-200">
+                                ✓ Hotel match
+                              </span>
+                            )
+                          ) : (
+                            <span className="text-gray-300">—</span>
+                          )}
+                        </TableCell>
+                        <TableCell>
+                          {c.price_found == null ? (
+                            <Badge variant="outline">No result</Badge>
+                          ) : c.is_cheaper ? (
+                            <Badge className="bg-green-100 text-green-700 border-green-200">
+                              ↓ Cheaper
+                            </Badge>
+                          ) : (
+                            <Badge variant="secondary">
+                              {c.price_found > ppn ? '↑ Higher' : '= Same'}
+                            </Badge>
+                          )}
+                        </TableCell>
+                      </TableRow>
+                    )
+                  })}
                 </TableBody>
               </Table>
             )}
