@@ -172,7 +172,7 @@ export default function BookingDetailPage() {
             <button
               onClick={triggerCheck}
               disabled={checking}
-              className="text-xs font-bold text-[#001e40]/60 hover:text-[#001e40] transition-colors disabled:opacity-40 flex items-center gap-1"
+              className="flex items-center gap-1 text-xs font-bold bg-[#001e40]/6 hover:bg-[#001e40]/12 text-[#001e40] px-3 py-1.5 rounded-xl transition-colors disabled:opacity-40"
             >
               <span className="material-symbols-outlined" style={{ fontSize: '1rem' }}>
                 {checking ? 'sync' : 'search'}
@@ -181,13 +181,13 @@ export default function BookingDetailPage() {
             </button>
             <Link
               href={`/bookings/${id}/edit`}
-              className="text-xs font-bold text-[#001e40]/60 hover:text-[#001e40] transition-colors flex items-center gap-1"
+              className="flex items-center gap-1 text-xs font-bold bg-[#001e40] hover:bg-[#003366] text-white px-3 py-1.5 rounded-xl transition-colors"
             >
               <span className="material-symbols-outlined" style={{ fontSize: '1rem' }}>edit</span>
               Edit
             </Link>
-            <div className="w-9 h-9 rounded-full bg-[#001e40]/8 flex items-center justify-center ml-1">
-              <span className="material-symbols-outlined text-[#001e40]/40" style={{ fontSize: '1.3rem' }}>person</span>
+            <div className="w-8 h-8 rounded-full bg-[#001e40]/8 flex items-center justify-center ml-0.5">
+              <span className="material-symbols-outlined text-[#001e40]/40" style={{ fontSize: '1.2rem' }}>person</span>
             </div>
           </div>
         </div>

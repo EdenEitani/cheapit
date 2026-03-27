@@ -224,12 +224,20 @@ export default function Dashboard() {
                           : b.lastChecked ? 'MONITORING' : 'NOT CHECKED YET'}
                       </span>
                     </div>
-                    <Link
-                      href={`/bookings/${b.id}`}
-                      className="bg-[#001e40] text-white text-xs font-bold px-4 py-2 rounded-xl hover:bg-[#003366] transition-colors"
-                    >
-                      Check Now
-                    </Link>
+                    <div className="flex items-center gap-2">
+                      <Link
+                        href={`/bookings/${b.id}/edit`}
+                        className="text-xs font-bold text-[#001e40]/50 hover:text-[#001e40] border border-gray-200 hover:border-[#001e40]/30 px-3 py-2 rounded-xl transition-colors"
+                      >
+                        Edit
+                      </Link>
+                      <Link
+                        href={`/bookings/${b.id}`}
+                        className="bg-[#001e40] text-white text-xs font-bold px-4 py-2 rounded-xl hover:bg-[#003366] transition-colors"
+                      >
+                        Details
+                      </Link>
+                    </div>
                   </div>
                 </div>
 
