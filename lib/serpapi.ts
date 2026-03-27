@@ -1,14 +1,24 @@
 import { Booking } from './supabase'
 
-export type PriceResult = {
-  price: number          // per night
-  platform: string
+export type ProviderPrice = {
+  source: string
+  pricePerNight: number
+  totalPrice: number
   url: string
-  hotelNameFound: string // actual hotel name returned by Serpapi
-  exactHotelMatch: boolean
+  isWatched: boolean
 }
 
-async function searchHotels(booking: Booking, withFilters: boolean): Promise<any[] | null> {
+export type PriceResult = {
+  hotelName: string
+  hotelLink: string
+  exactHotelMatch: boolean
+  cheapestWatched: ProviderPrice | null   // best price from watched platforms
+  cheapestAny: ProviderPrice | null       // best price overall
+  allPrices: ProviderPrice[]              // every provider found
+  rawResponse: Record<string, unknown>   // full Serpapi JSON
+}
+
+async function doSearch(booking: Booking, withFilters: boolean): Promise<Record<string, unknown> | null> {
   const params = new URLSearchParams({
     engine: 'google_hotels',
     q: `${booking.hotel_name} ${booking.hotel_city}`,
@@ -24,75 +34,84 @@ async function searchHotels(booking: Booking, withFilters: boolean): Promise<any
     if (booking.breakfast_included) params.set('amenities', '35')
   }
 
-  const url = `https://serpapi.com/search.json?${params.toString()}`
-  const response = await fetch(url, { cache: 'no-store' })
-
-  if (!response.ok) {
-    throw new Error(`Serpapi ${response.status}: ${await response.text()}`)
-  }
+  const response = await fetch(`https://serpapi.com/search.json?${params}`, { cache: 'no-store' })
+  if (!response.ok) throw new Error(`Serpapi ${response.status}: ${await response.text()}`)
 
   const data = await response.json()
-  const properties: any[] = data.properties ?? []
-  return properties.length > 0 ? properties : null
+
+  // Two response shapes:
+  // 1. Property detail: data.type === "hotel" — data.featured_prices[]
+  // 2. List: data.properties[] — each with .prices[]
+  const hasResults =
+    (data.type === 'hotel' && Array.isArray(data.featured_prices) && data.featured_prices.length > 0) ||
+    (Array.isArray(data.properties) && data.properties.length > 0)
+
+  return hasResults ? data : null
 }
 
 export async function fetchHotelPrice(booking: Booking): Promise<PriceResult | null> {
-  // Try with free cancellation (+ breakfast) first; fall back without filters
-  let properties = await searchHotels(booking, true)
-  if (!properties) {
-    properties = await searchHotels(booking, false)
+  const nights = Math.max(
+    1,
+    Math.round(
+      (new Date(booking.check_out).getTime() - new Date(booking.check_in).getTime()) / 86400000
+    )
+  )
+
+  // Try with filters first, fall back without
+  let data = await doSearch(booking, true)
+  if (!data) data = await doSearch(booking, false)
+  if (!data) return null
+
+  const rawResponse = data as Record<string, unknown>
+
+  // --- Extract hotel identity ---
+  let hotelName: string
+  let hotelLink: string
+  let rawPrices: any[]
+
+  if (data.type === 'hotel') {
+    // Property detail mode
+    hotelName = (data.name as string) ?? booking.hotel_name
+    hotelLink = (data.link as string) ?? ''
+    rawPrices = (data.featured_prices as any[]) ?? []
+  } else {
+    // List mode — take first property
+    const prop = (data.properties as any[])[0]
+    hotelName = prop.name ?? booking.hotel_name
+    hotelLink = prop.link ?? ''
+    rawPrices = prop.prices ?? prop.featured_prices ?? []
   }
-  if (!properties) return null
 
-  // First property is the best name match from Google
-  const property = properties[0]
-  const hotelNameFound: string = property.name ?? booking.hotel_name
-
-  // Loose name match: both sides contain the first significant word
+  // Loose name match
   const normalize = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '')
   const firstWord = (s: string) => normalize(s).slice(0, 6)
   const exactHotelMatch =
-    normalize(hotelNameFound).includes(firstWord(booking.hotel_name)) ||
-    normalize(booking.hotel_name).includes(firstWord(hotelNameFound))
+    normalize(hotelName).includes(firstWord(booking.hotel_name)) ||
+    normalize(booking.hotel_name).includes(firstWord(hotelName))
 
-  // prices[] is the per-source breakdown; rate_per_night is already per-night
-  const prices: any[] = property.prices ?? []
-
-  // Filter to watched platforms, fall back to all
+  // Build provider list
   const watchPlatforms = booking.watch_platforms.map((p) => p.toLowerCase())
-  const matching = prices.filter((r: any) => {
-    const source = (r.source ?? '').toLowerCase()
-    return watchPlatforms.some((p) => source.includes(p))
-  })
-  const candidates = matching.length > 0 ? matching : prices
 
-  let bestPrice: number
-  let bestPlatform: string
-  let bestUrl: string
-
-  if (candidates.length > 0) {
-    const cheapest = candidates.reduce((best: any, r: any) => {
-      const a = r.rate_per_night?.extracted_lowest ?? Infinity
-      const b = best.rate_per_night?.extracted_lowest ?? Infinity
-      return a < b ? r : best
+  const allPrices: ProviderPrice[] = rawPrices
+    .map((r: any) => {
+      const ppn: number = r.rate_per_night?.extracted_lowest ?? (r.price ?? 0) / nights
+      const total: number = r.total_rate?.extracted_lowest ?? ppn * nights
+      const source: string = r.source ?? r.provider ?? 'Unknown'
+      const isWatched = watchPlatforms.some((p) => source.toLowerCase().includes(p))
+      return { source, pricePerNight: Math.round(ppn * 100) / 100, totalPrice: Math.round(total), url: r.link ?? '', isWatched }
     })
-    bestPrice = cheapest.rate_per_night?.extracted_lowest ?? 0
-    bestPlatform = cheapest.source ?? 'Unknown'
-    bestUrl = cheapest.link ?? ''
-  } else {
-    // Fall back to the property-level lowest rate
-    bestPrice = property.rate_per_night?.extracted_lowest ?? 0
-    bestPlatform = 'Google Hotels'
-    bestUrl = property.link ?? ''
-  }
+    .filter((p) => p.pricePerNight > 0)
+    .sort((a, b) => a.pricePerNight - b.pricePerNight)
 
-  if (!bestPrice) return null
+  const watchedPrices = allPrices.filter((p) => p.isWatched)
 
   return {
-    price: Math.round(bestPrice * 100) / 100,
-    platform: bestPlatform,
-    url: bestUrl,
-    hotelNameFound,
+    hotelName,
+    hotelLink,
     exactHotelMatch,
+    cheapestWatched: watchedPrices[0] ?? null,
+    cheapestAny: allPrices[0] ?? null,
+    allPrices,
+    rawResponse,
   }
 }

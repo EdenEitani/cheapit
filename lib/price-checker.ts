@@ -6,37 +6,40 @@ import { startOfDay } from 'date-fns'
 async function checkOneBooking(
   db: ReturnType<typeof createServiceClient>,
   booking: Booking
-): Promise<{ alerted: boolean; priceFound: number | null; error?: string }> {
+): Promise<{ alerted: boolean; priceFound: number | null }> {
   const nights = Math.max(
     1,
     Math.round(
-      (new Date(booking.check_out).getTime() - new Date(booking.check_in).getTime()) /
-        (1000 * 60 * 60 * 24)
+      (new Date(booking.check_out).getTime() - new Date(booking.check_in).getTime()) / 86400000
     )
   )
   const pricePaidPerNight = booking.price_paid / nights
+
   const result = await fetchHotelPrice(booking)
-  const isCheaper = result !== null && result.price < pricePaidPerNight
+
+  // Use cheapest watched price for comparison; fall back to cheapest overall
+  const best = result?.cheapestWatched ?? result?.cheapestAny ?? null
+  const isCheaper = best !== null && best.pricePerNight < pricePaidPerNight
 
   const { data: priceCheck, error: checkError } = await db
     .from('price_checks')
     .insert({
       booking_id: booking.id,
-      price_found: result?.price ?? null,
-      // store hotel name found + exact match flag so UI can show mismatch warning
+      price_found: best?.pricePerNight ?? null,
       room_description_found: result
-        ? `${result.exactHotelMatch ? 'match' : 'fuzzy'}::${result.hotelNameFound}`
+        ? `${result.exactHotelMatch ? 'match' : 'fuzzy'}::${result.hotelName}`
         : null,
-      platform_found: result?.platform ?? null,
-      url: result?.url ?? null,
+      platform_found: best?.source ?? null,
+      url: best?.url ?? null,
       is_cheaper: isCheaper,
+      raw_response: result?.rawResponse ?? null,
     })
     .select()
     .single()
 
   if (checkError) throw new Error(`Failed to insert price check: ${checkError.message}`)
 
-  if (isCheaper && result) {
+  if (isCheaper && best && result) {
     const todayStart = startOfDay(new Date()).toISOString()
     const { data: recentAlerts } = await db
       .from('alerts')
@@ -49,20 +52,20 @@ async function checkOneBooking(
       const message = await sendPriceDropAlert({
         booking,
         pricePaidPerNight,
-        priceFound: result.price,
-        platform: result.platform,
-        url: result.url,
+        priceFound: best.pricePerNight,
+        platform: best.source,
+        url: best.url,
       })
       await db.from('alerts').insert({
         booking_id: booking.id,
         price_check_id: priceCheck.id,
         telegram_message: message,
       })
-      return { alerted: true, priceFound: result.price }
+      return { alerted: true, priceFound: best.pricePerNight }
     }
   }
 
-  return { alerted: false, priceFound: result?.price ?? null }
+  return { alerted: false, priceFound: best?.pricePerNight ?? null }
 }
 
 export async function runPriceCheckForBooking(bookingId: string) {

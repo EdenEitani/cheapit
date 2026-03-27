@@ -9,7 +9,12 @@ const config: Config = {
   ],
   theme: {
     extend: {
+      fontFamily: {
+        heading: ['var(--font-manrope)', 'sans-serif'],
+        body: ['var(--font-inter)', 'sans-serif'],
+      },
       colors: {
+        // shadcn tokens
         border: 'hsl(var(--border))',
         input: 'hsl(var(--input))',
         ring: 'hsl(var(--ring))',
@@ -43,11 +48,26 @@ const config: Config = {
           DEFAULT: 'hsl(var(--card))',
           foreground: 'hsl(var(--card-foreground))',
         },
+        // Design system tokens
+        navy: {
+          DEFAULT: '#001e40',
+          light: '#003366',
+          muted: '#0a2d52',
+        },
+        forest: {
+          DEFAULT: '#006e25',
+          light: '#008a2e',
+          muted: '#e8f5ed',
+        },
+        surface: '#f4f6f9',
+        'surface-card': '#ffffff',
       },
       borderRadius: {
         lg: 'var(--radius)',
         md: 'calc(var(--radius) - 2px)',
         sm: 'calc(var(--radius) - 4px)',
+        '2xl': '1rem',
+        '3xl': '1.5rem',
       },
     },
   },

@@ -24,10 +24,11 @@ export type PriceCheck = {
   booking_id: string
   checked_at: string
   price_found: number | null
-  room_description_found: string | null
+  room_description_found: string | null  // "match::HotelName" or "fuzzy::HotelName"
   platform_found: string | null
   url: string | null
   is_cheaper: boolean | null
+  raw_response: Record<string, unknown> | null
 }
 
 export type Alert = {
