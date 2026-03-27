@@ -16,6 +16,7 @@ import {
 } from 'recharts'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
 import {
   Table,
   TableBody,
@@ -38,6 +39,8 @@ export default function BookingDetailPage() {
   const [checks, setChecks] = useState<PriceCheck[]>([])
   const [alerts, setAlerts] = useState<Alert[]>([])
   const [loading, setLoading] = useState(true)
+  const [checking, setChecking] = useState(false)
+  const [checkResult, setCheckResult] = useState<string | null>(null)
 
   useEffect(() => {
     if (id) fetchAll()
@@ -50,13 +53,45 @@ export default function BookingDetailPage() {
       fetch(`/api/bookings/${id}/price-checks`),
       fetch(`/api/bookings/${id}/alerts`),
     ])
-
     if (!bookingRes.ok) { router.push('/'); return }
-
     setBooking(await bookingRes.json())
     setChecks(await checksRes.json())
     setAlerts(await alertsRes.json())
     setLoading(false)
+  }
+
+  async function triggerCheck() {
+    setChecking(true)
+    setCheckResult(null)
+    try {
+      const res = await fetch(`/api/bookings/${id}/check`, { method: 'POST' })
+      const data = await res.json()
+      if (!res.ok) {
+        setCheckResult(`Error: ${data.error}`)
+      } else if (data.priceFound == null) {
+        setCheckResult('No price found for this hotel/dates.')
+      } else {
+        const sym = CURRENCY_SYMBOLS[booking!.currency] ?? booking!.currency
+        const nights = Math.max(1, Math.round(
+          (new Date(booking!.check_out).getTime() - new Date(booking!.check_in).getTime()) / 86400000
+        ))
+        const ppn = booking!.price_paid / nights
+        const diff = ppn - data.priceFound
+        if (data.alerted) {
+          setCheckResult(`Price drop found! ${sym}${Math.round(data.priceFound)}/night — Telegram alert sent.`)
+        } else if (diff > 0) {
+          setCheckResult(`Price drop found (${sym}${Math.round(data.priceFound)}/night) but alert already sent today.`)
+        } else {
+          setCheckResult(`No cheaper price found. Current: ${sym}${Math.round(data.priceFound)}/night.`)
+        }
+      }
+      // Refresh checks list
+      const checksRes = await fetch(`/api/bookings/${id}/price-checks`)
+      setChecks(await checksRes.json())
+    } catch {
+      setCheckResult('Check failed — see console.')
+    }
+    setChecking(false)
   }
 
   if (loading || !booking) {
@@ -71,13 +106,11 @@ export default function BookingDetailPage() {
   const nights = Math.max(
     1,
     Math.round(
-      (new Date(booking.check_out).getTime() - new Date(booking.check_in).getTime()) /
-        (1000 * 60 * 60 * 24)
+      (new Date(booking.check_out).getTime() - new Date(booking.check_in).getTime()) / 86400000
     )
   )
   const ppn = booking.price_paid / nights
 
-  // Chart data — oldest first
   const chartData = [...checks]
     .reverse()
     .filter((c) => c.price_found != null)
@@ -89,20 +122,58 @@ export default function BookingDetailPage() {
   return (
     <div className="min-h-screen bg-gray-50">
       <div className="max-w-5xl mx-auto px-4 py-8">
-        <div className="flex items-center gap-3 mb-6">
+        <div className="flex items-center justify-between mb-6">
           <Link href="/" className="text-gray-500 hover:text-gray-700 text-sm">
             ← Back
           </Link>
+          <div className="flex gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={triggerCheck}
+              disabled={checking}
+            >
+              {checking ? 'Checking…' : '🔍 Check now'}
+            </Button>
+            <Link href={`/bookings/${id}/edit`}>
+              <Button variant="outline" size="sm">✏️ Edit</Button>
+            </Link>
+          </div>
         </div>
+
+        {checkResult && (
+          <div className={`mb-4 px-4 py-3 rounded-md text-sm border ${
+            checkResult.startsWith('Error')
+              ? 'bg-red-50 border-red-200 text-red-700'
+              : checkResult.includes('drop') || checkResult.includes('alert')
+              ? 'bg-green-50 border-green-200 text-green-700'
+              : 'bg-gray-50 border-gray-200 text-gray-600'
+          }`}>
+            {checkResult}
+          </div>
+        )}
 
         {/* Header */}
         <Card className="mb-6">
           <CardContent className="pt-6">
             <div className="flex items-start justify-between gap-4">
               <div>
-                <h1 className="text-2xl font-bold text-gray-900 mb-1">
-                  {booking.hotel_name}
-                </h1>
+                <div className="flex items-center gap-2 mb-1">
+                  <h1 className="text-2xl font-bold text-gray-900">
+                    {booking.hotel_url ? (
+                      <a
+                        href={booking.hotel_url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="hover:underline"
+                      >
+                        {booking.hotel_name} ↗
+                      </a>
+                    ) : (
+                      booking.hotel_name
+                    )}
+                  </h1>
+                </div>
                 <p className="text-gray-500 mb-1">{booking.hotel_city}</p>
                 <p className="text-gray-600">{booking.room_description}</p>
                 <div className="flex flex-wrap gap-x-4 gap-y-1 text-sm text-gray-500 mt-3">
@@ -125,9 +196,7 @@ export default function BookingDetailPage() {
                 <div className="text-2xl font-bold text-gray-900">
                   {sym}{Math.round(booking.price_paid)}
                 </div>
-                <div className="text-sm text-gray-500">
-                  {sym}{Math.round(ppn)} / night
-                </div>
+                <div className="text-sm text-gray-500">{sym}{Math.round(ppn)} / night</div>
               </div>
             </div>
           </CardContent>
@@ -152,13 +221,7 @@ export default function BookingDetailPage() {
                     strokeDasharray="4 4"
                     label={{ value: `Paid ${sym}${Math.round(ppn)}`, position: 'right', fontSize: 11, fill: '#ef4444' }}
                   />
-                  <Line
-                    type="monotone"
-                    dataKey="price"
-                    stroke="#3b82f6"
-                    dot={{ r: 3 }}
-                    strokeWidth={2}
-                  />
+                  <Line type="monotone" dataKey="price" stroke="#3b82f6" dot={{ r: 3 }} strokeWidth={2} />
                 </LineChart>
               </ResponsiveContainer>
             </CardContent>
@@ -174,7 +237,7 @@ export default function BookingDetailPage() {
           <CardContent>
             {checks.length === 0 ? (
               <p className="text-gray-400 text-sm py-4 text-center">
-                No checks yet — next run in up to 6 hours
+                No checks yet — press &quot;Check now&quot; or wait for the daily cron
               </p>
             ) : (
               <Table>
@@ -197,12 +260,7 @@ export default function BookingDetailPage() {
                       </TableCell>
                       <TableCell className="text-sm text-gray-500">
                         {c.url ? (
-                          <a
-                            href={c.url}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="hover:underline text-blue-600"
-                          >
+                          <a href={c.url} target="_blank" rel="noopener noreferrer" className="hover:underline text-blue-600">
                             {c.platform_found ?? '—'}
                           </a>
                         ) : (
@@ -211,9 +269,7 @@ export default function BookingDetailPage() {
                       </TableCell>
                       <TableCell>
                         {c.is_cheaper ? (
-                          <Badge className="bg-green-100 text-green-700 border-green-200">
-                            Cheaper
-                          </Badge>
+                          <Badge className="bg-green-100 text-green-700 border-green-200">Cheaper</Badge>
                         ) : c.price_found != null ? (
                           <Badge variant="secondary">Same / higher</Badge>
                         ) : (
@@ -241,9 +297,7 @@ export default function BookingDetailPage() {
                     <div className="text-xs text-gray-400 mb-1">
                       {format(parseISO(a.sent_at), 'd MMM yyyy HH:mm')}
                     </div>
-                    <pre className="whitespace-pre-wrap font-sans text-gray-700">
-                      {a.telegram_message}
-                    </pre>
+                    <pre className="whitespace-pre-wrap font-sans text-gray-700">{a.telegram_message}</pre>
                   </div>
                 ))}
               </div>

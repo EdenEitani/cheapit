@@ -10,6 +10,7 @@ export type Booking = {
   guests: number
   price_paid: number
   currency: string
+  hotel_url: string | null
   platform: string | null
   breakfast_included: boolean
   cancellation_deadline: string | null

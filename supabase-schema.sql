@@ -11,6 +11,7 @@ create table bookings (
   guests integer not null default 2,
   price_paid numeric not null,
   currency text not null default 'USD',
+  hotel_url text,
   platform text,
   breakfast_included boolean default false,
   cancellation_deadline timestamptz,

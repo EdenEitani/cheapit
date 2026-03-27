@@ -27,6 +27,7 @@ export async function POST(req: Request) {
       guests: body.guests,
       price_paid: body.price_paid,
       currency: body.currency,
+      hotel_url: body.hotel_url ?? null,
       platform: body.platform ?? null,
       breakfast_included: body.breakfast_included ?? false,
       cancellation_deadline: body.cancellation_deadline ?? null,
