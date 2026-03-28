@@ -17,9 +17,16 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
   const db = createServiceClient()
   const body = await req.json()
 
+  // If the cancellation deadline is being changed, reset the alerted flag so
+  // the user gets a fresh reminder for the new deadline window.
+  const update = { ...body }
+  if ('cancellation_deadline' in body) {
+    update.deadline_alerted = false
+  }
+
   const { data, error } = await db
     .from('bookings')
-    .update(body)
+    .update(update)
     .eq('id', params.id)
     .select()
     .single()

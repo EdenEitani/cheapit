@@ -1,15 +1,9 @@
 import { createServiceClient, Booking } from './supabase'
 import { fetchHotelPrice } from './serpapi'
-import { sendPriceDropAlert } from './telegram'
+import { sendPriceDropAlert, sendDeadlineAlert } from './telegram'
 import { startOfDay } from 'date-fns'
 
 type CheckOptions = {
-  /**
-   * Mark this check as the baseline snapshot taken on the day the booking was
-   * saved. Baseline checks never trigger Telegram alerts — they exist purely to
-   * anchor what the market rate looked like at booking time, which is used to
-   * validate fuzzy-match comparisons in future checks.
-   */
   isBaseline?: boolean
 }
 
@@ -29,27 +23,23 @@ async function checkOneBooking(
   const pricePaidPerNight = booking.price_paid / nights
 
   // Run primary search and, when guests > 2, a normalised 2-adult search in parallel.
-  // The normalised search gives us a standard market-rate reference even when
-  // the hotel doesn't surface pricing for the actual guest count.
   const needsNormalization = booking.guests > 2
-
   const [result, normalizedResult] = await Promise.all([
     fetchHotelPrice(booking),
     needsNormalization ? fetchHotelPrice(booking, { adultsOverride: 2 }) : Promise.resolve(null),
   ])
 
   // Best price: prefer primary (actual guest count), fall back to normalised (2-adult)
-  const best = result?.cheapestWatched ?? result?.cheapestAny
-    ?? normalizedResult?.cheapestWatched ?? normalizedResult?.cheapestAny
-    ?? null
+  const best =
+    result?.cheapestWatched ?? result?.cheapestAny ??
+    normalizedResult?.cheapestWatched ?? normalizedResult?.cheapestAny ??
+    null
 
-  // Only mark as cheaper when we're confident it's the same hotel (exact match).
-  // Fuzzy matches can refer to a completely different property, so we store the
-  // price but avoid false "cheaper" alerts.
+  // Only mark cheaper when we found the exact same hotel — fuzzy matches are stored
+  // for trend analysis but must not trigger false alerts.
   const exactMatch = result?.exactHotelMatch ?? false
   const isCheaper = exactMatch && best !== null && best.pricePerNight < pricePaidPerNight
 
-  // Pack all context into raw_response._meta so we don't need a schema migration.
   const rawResponse: Record<string, unknown> = {
     ...(result?.rawResponse ?? {}),
     _meta: {
@@ -85,7 +75,7 @@ async function checkOneBooking(
 
   if (checkError) throw new Error(`Failed to insert price check: ${checkError.message}`)
 
-  // Baseline checks and fuzzy-match checks never trigger alerts.
+  // Baseline checks never trigger alerts
   if (!isBaseline && isCheaper && best && result) {
     const todayStart = startOfDay(new Date()).toISOString()
     const { data: recentAlerts } = await db
@@ -115,11 +105,6 @@ async function checkOneBooking(
   return { alerted: false, priceFound: best?.pricePerNight ?? null }
 }
 
-/**
- * Run a price check for a single booking by ID.
- * Pass `isBaseline: true` when called immediately after booking creation —
- * this captures the market rate on day zero for future trend comparison.
- */
 export async function runPriceCheckForBooking(
   bookingId: string,
   options: CheckOptions = {}
@@ -136,13 +121,17 @@ export async function runPriceCheckForBooking(
 }
 
 /**
- * Run price checks for all active bookings (called by cron).
+ * Run price checks for all active bookings in parallel.
+ * Sequential processing was the original approach but hit Vercel's timeout for
+ * larger booking lists; Promise.allSettled lets every booking attempt run
+ * concurrently and collects individual failures without aborting others.
  */
-export async function runPriceChecks(): Promise<{ checked: number; alerts: number; errors: string[] }> {
+export async function runPriceChecks(): Promise<{
+  checked: number
+  alerts: number
+  errors: string[]
+}> {
   const db = createServiceClient()
-  const errors: string[] = []
-  let checked = 0
-  let alertsSent = 0
 
   const { data: bookings, error: fetchError } = await db
     .from('bookings')
@@ -152,15 +141,92 @@ export async function runPriceChecks(): Promise<{ checked: number; alerts: numbe
   if (fetchError) throw new Error(`Failed to fetch bookings: ${fetchError.message}`)
   if (!bookings || bookings.length === 0) return { checked: 0, alerts: 0, errors: [] }
 
-  for (const booking of bookings as Booking[]) {
-    try {
-      const result = await checkOneBooking(db, booking)
-      checked++
-      if (result.alerted) alertsSent++
-    } catch (err: any) {
-      errors.push(`Booking ${booking.id} (${booking.hotel_name}): ${err.message}`)
-    }
-  }
+  const results = await Promise.allSettled(
+    (bookings as Booking[]).map((b) => checkOneBooking(db, b))
+  )
 
-  return { checked, alerts: alertsSent, errors }
+  let checked = 0
+  let alerts = 0
+  const errors: string[] = []
+
+  results.forEach((r, i) => {
+    const b = (bookings as Booking[])[i]
+    if (r.status === 'fulfilled') {
+      checked++
+      if (r.value.alerted) alerts++
+    } else {
+      errors.push(`${b.hotel_name} (${b.id}): ${r.reason?.message ?? 'unknown error'}`)
+    }
+  })
+
+  return { checked, alerts, errors }
+}
+
+/**
+ * Send Telegram reminders for bookings whose cancellation deadline is within
+ * 48 hours and haven't been alerted yet. Runs in parallel with price checks.
+ *
+ * Uses the `deadline_alerted` boolean on the bookings row to ensure we only
+ * fire once per booking (reset to false when the booking is edited).
+ */
+export async function checkCancellationDeadlines(): Promise<{
+  alerted: number
+  errors: string[]
+}> {
+  const db = createServiceClient()
+  const now = new Date()
+  const in48h = new Date(now.getTime() + 48 * 60 * 60 * 1000).toISOString()
+
+  const { data: bookings, error } = await db
+    .from('bookings')
+    .select('*')
+    .eq('active', true)
+    .eq('deadline_alerted', false)
+    .not('cancellation_deadline', 'is', null)
+    .lte('cancellation_deadline', in48h)          // deadline is within 48 h
+    .gt('cancellation_deadline', now.toISOString()) // deadline hasn't passed yet
+
+  if (error) throw new Error(`Deadline query failed: ${error.message}`)
+  if (!bookings || bookings.length === 0) return { alerted: 0, errors: [] }
+
+  const results = await Promise.allSettled(
+    (bookings as Booking[]).map(async (booking) => {
+      const nights = Math.max(1, Math.round(
+        (new Date(booking.check_out).getTime() - new Date(booking.check_in).getTime()) / 86400000
+      ))
+      const pricePaidPerNight = booking.price_paid / nights
+      const hoursRemaining =
+        (new Date(booking.cancellation_deadline!).getTime() - now.getTime()) / 3600000
+
+      // Pull the most recent market price for context in the alert
+      const { data: latestChecks } = await db
+        .from('price_checks')
+        .select('price_found')
+        .eq('booking_id', booking.id)
+        .not('price_found', 'is', null)
+        .order('checked_at', { ascending: false })
+        .limit(1)
+
+      const latestPrice: number | null = latestChecks?.[0]?.price_found ?? null
+
+      await sendDeadlineAlert({ booking, hoursRemaining, pricePaidPerNight, latestPrice })
+
+      // Mark alerted so we don't fire again unless the booking is edited
+      await db.from('bookings').update({ deadline_alerted: true }).eq('id', booking.id)
+    })
+  )
+
+  let alerted = 0
+  const errors: string[] = []
+
+  results.forEach((r, i) => {
+    const b = (bookings as Booking[])[i]
+    if (r.status === 'fulfilled') {
+      alerted++
+    } else {
+      errors.push(`${b.hotel_name} (${b.id}): ${r.reason?.message ?? 'unknown error'}`)
+    }
+  })
+
+  return { alerted, errors }
 }

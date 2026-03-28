@@ -17,6 +17,7 @@ export type Booking = {
   watch_platforms: string[]
   active: boolean
   created_at: string
+  deadline_alerted: boolean
 }
 
 export type PriceCheck = {

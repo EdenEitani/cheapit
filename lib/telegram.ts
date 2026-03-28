@@ -2,10 +2,24 @@ import { Booking } from './supabase'
 import { format, parseISO } from 'date-fns'
 
 const CURRENCY_SYMBOLS: Record<string, string> = {
-  USD: '$',
-  EUR: '€',
-  GBP: '£',
-  ILS: '₪',
+  USD: '$', EUR: '€', GBP: '£', ILS: '₪',
+}
+
+async function sendTelegramMessage(text: string): Promise<void> {
+  const res = await fetch(
+    `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendMessage`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        chat_id: process.env.TELEGRAM_CHAT_ID,
+        text,
+        parse_mode: 'Markdown',
+        disable_web_page_preview: false,
+      }),
+    }
+  )
+  if (!res.ok) throw new Error(`Telegram API error: ${await res.text()}`)
 }
 
 export async function sendPriceDropAlert({
@@ -22,19 +36,11 @@ export async function sendPriceDropAlert({
   url: string
 }): Promise<string> {
   const sym = CURRENCY_SYMBOLS[booking.currency] ?? booking.currency
-  const nights = Math.max(
-    1,
-    Math.round(
-      (new Date(booking.check_out).getTime() - new Date(booking.check_in).getTime()) /
-        (1000 * 60 * 60 * 24)
-    )
-  )
+  const nights = Math.max(1, Math.round(
+    (new Date(booking.check_out).getTime() - new Date(booking.check_in).getTime()) / 86400000
+  ))
   const saving = pricePaidPerNight - priceFound
   const savingPct = Math.round((saving / pricePaidPerNight) * 100)
-
-  const checkIn = format(parseISO(booking.check_in), 'd MMM')
-  const checkOut = format(parseISO(booking.check_out), 'd MMM')
-
   const deadlineStr = booking.cancellation_deadline
     ? format(parseISO(booking.cancellation_deadline), 'd MMM yyyy')
     : 'N/A'
@@ -44,7 +50,7 @@ export async function sendPriceDropAlert({
     '',
     `*Hotel:* ${booking.hotel_name}, ${booking.hotel_city}`,
     `*Room:* ${booking.room_description}`,
-    `*Dates:* ${checkIn} → ${checkOut} (${nights} night${nights > 1 ? 's' : ''})`,
+    `*Dates:* ${format(parseISO(booking.check_in), 'd MMM')} → ${format(parseISO(booking.check_out), 'd MMM')} (${nights} night${nights > 1 ? 's' : ''})`,
     `*Guests:* ${booking.guests}`,
     '',
     `💰 *You paid:* ${sym}${Math.round(pricePaidPerNight * nights)}`,
@@ -57,23 +63,61 @@ export async function sendPriceDropAlert({
     `Free cancellation ✅${booking.breakfast_included ? ' | Breakfast included ✅' : ''}`,
   ].join('\n')
 
-  const res = await fetch(
-    `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendMessage`,
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        chat_id: process.env.TELEGRAM_CHAT_ID,
-        text: message,
-        parse_mode: 'Markdown',
-        disable_web_page_preview: false,
-      }),
-    }
-  )
+  await sendTelegramMessage(message)
+  return message
+}
 
-  if (!res.ok) {
-    throw new Error(`Telegram API error: ${await res.text()}`)
+/**
+ * Sent when the cancellation deadline is within 48 hours.
+ * Includes the latest market price for context so the user can decide whether
+ * to rebook before the window closes.
+ */
+export async function sendDeadlineAlert({
+  booking,
+  hoursRemaining,
+  pricePaidPerNight,
+  latestPrice,
+}: {
+  booking: Booking
+  hoursRemaining: number
+  pricePaidPerNight: number
+  latestPrice: number | null
+}): Promise<string> {
+  const sym = CURRENCY_SYMBOLS[booking.currency] ?? booking.currency
+  const nights = Math.max(1, Math.round(
+    (new Date(booking.check_out).getTime() - new Date(booking.check_in).getTime()) / 86400000
+  ))
+  const deadlineStr = format(parseISO(booking.cancellation_deadline!), 'd MMM yyyy HH:mm')
+  const hoursLabel = Math.round(hoursRemaining)
+
+  let priceContext: string
+  if (latestPrice != null) {
+    const diff = pricePaidPerNight - latestPrice
+    if (diff > 0) {
+      priceContext = `📉 *Market rate:* ${sym}${Math.round(latestPrice)}/nt _(${sym}${Math.round(diff)}/nt cheaper — consider rebooking!)_`
+    } else if (diff < 0) {
+      priceContext = `📈 *Market rate:* ${sym}${Math.round(latestPrice)}/nt _(${sym}${Math.round(-diff)}/nt more expensive — your rate is good)_`
+    } else {
+      priceContext = `💰 *Market rate:* ${sym}${Math.round(latestPrice)}/nt (same as your rate)`
+    }
+  } else {
+    priceContext = `💰 *You paid:* ${sym}${Math.round(pricePaidPerNight)}/nt _(no market data yet)_`
   }
 
+  const message = [
+    `⏰ *Cancellation Deadline in ${hoursLabel}h!*`,
+    '',
+    `*${booking.hotel_name}*, ${booking.hotel_city}`,
+    `📅 ${format(parseISO(booking.check_in), 'd MMM')} → ${format(parseISO(booking.check_out), 'd MMM yyyy')} (${nights}n)`,
+    '',
+    `🚨 *Cancel by:* ${deadlineStr}`,
+    '',
+    priceContext,
+    '',
+    `If you want to rebook at a lower rate, act now before this deadline passes.`,
+    ...(booking.hotel_url ? [`🔗 [Hotel link](${booking.hotel_url})`] : []),
+  ].join('\n')
+
+  await sendTelegramMessage(message)
   return message
 }

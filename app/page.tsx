@@ -16,9 +16,30 @@ const CARD_GRADIENTS = [
   ['#0a2a4a', '#051520'],
 ]
 
+type PriceCheckSnap = { price_found: number | null; checked_at: string }
+
 type BookingEnriched = Booking & {
   lastPrice?: number | null
   lastChecked?: string | null
+  trend?: 'dropping' | 'rising' | 'stable' | 'unknown'
+  consistentlyFailed?: boolean
+}
+
+/** Requires ≥2 non-null data points. Change >3% either way = trending. */
+function computeTrend(checks: PriceCheckSnap[]): 'dropping' | 'rising' | 'stable' | 'unknown' {
+  const prices = checks.filter(c => c.price_found != null).map(c => c.price_found!)
+  if (prices.length < 2) return 'unknown'
+  // checks arrive newest-first; prices[0] = newest, prices[last] = oldest
+  const pct = (prices[0] - prices[prices.length - 1]) / prices[prices.length - 1]
+  if (pct < -0.03) return 'dropping'
+  if (pct > 0.03) return 'rising'
+  return 'stable'
+}
+
+/** True if the last `threshold` consecutive checks all returned no price. */
+function consistentlyFailed(checks: PriceCheckSnap[], threshold = 3): boolean {
+  if (checks.length < threshold) return false
+  return checks.slice(0, threshold).every(c => c.price_found == null)
 }
 
 function Wave() {
@@ -42,11 +63,17 @@ export default function Dashboard() {
     const data: Booking[] = await res.json()
     const enriched = await Promise.all(
       data.map(async (b) => {
-        const r = await fetch(`/api/bookings/${b.id}/price-checks?limit=1`)
+        const r = await fetch(`/api/bookings/${b.id}/price-checks?limit=5`)
         if (!r.ok) return b
-        const checks = await r.json()
+        const checks: PriceCheckSnap[] = await r.json()
         const last = checks[0]
-        return { ...b, lastPrice: last?.price_found ?? null, lastChecked: last?.checked_at ?? null }
+        return {
+          ...b,
+          lastPrice: last?.price_found ?? null,
+          lastChecked: last?.checked_at ?? null,
+          trend: computeTrend(checks),
+          consistentlyFailed: consistentlyFailed(checks),
+        }
       })
     )
     setBookings(enriched)
@@ -145,6 +172,8 @@ export default function Dashboard() {
             const isUrgent = urgentDeadline(b)
             const saving = s === 'cheaper' && b.lastPrice != null ? Math.round(paidPpn - b.lastPrice) : 0
             const [topColor, bottomColor] = CARD_GRADIENTS[idx % CARD_GRADIENTS.length]
+            const trend = b.trend ?? 'unknown'
+            const failed = b.consistentlyFailed ?? false
 
             return (
               <div key={b.id} className={`bg-white rounded-2xl overflow-hidden shadow-sm border border-gray-100 ${!b.active ? 'opacity-60' : ''}`}>
@@ -188,6 +217,14 @@ export default function Dashboard() {
                     {format(parseISO(b.check_in), 'd MMM')} — {format(parseISO(b.check_out), 'd MMM yyyy')} · {n}n
                   </div>
 
+                  {/* Failed-check warning */}
+                  {failed && (
+                    <div className="flex items-center gap-1.5 text-[11px] text-amber-600 bg-amber-50 border border-amber-200 rounded-lg px-2.5 py-1.5 mb-2.5">
+                      <span className="material-symbols-outlined" style={{ fontSize: '0.9rem' }}>warning</span>
+                      Hotel not found in last 3 checks — verify hotel name
+                    </div>
+                  )}
+
                   {/* Price row */}
                   <div className="flex items-stretch gap-3 mb-3">
                     <div>
@@ -198,7 +235,13 @@ export default function Dashboard() {
                       <>
                         <div className="w-px bg-gray-100" />
                         <div>
-                          <p className="text-[10px] text-gray-400 uppercase tracking-wide font-body">Current low found</p>
+                          <p className="text-[10px] text-gray-400 uppercase tracking-wide font-body flex items-center gap-1">
+                            Current low found
+                            {/* Trend arrow */}
+                            {trend === 'dropping' && <span className="text-[#006e25]" title="Trending down">↓</span>}
+                            {trend === 'rising'   && <span className="text-red-400" title="Trending up">↑</span>}
+                            {trend === 'stable'   && <span className="text-gray-400" title="Stable">→</span>}
+                          </p>
                           <p className={`font-heading font-bold text-sm ${s === 'cheaper' ? 'text-[#006e25]' : 'text-[#001e40]'}`}>
                             {sym}{Math.round(b.lastPrice)}/nt
                           </p>
