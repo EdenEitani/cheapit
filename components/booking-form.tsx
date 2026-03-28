@@ -118,12 +118,20 @@ export default function BookingForm({ initialValues, bookingId }: Props) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
     })
+    const saved = await res.json()
     if (!res.ok) {
-      const data = await res.json()
-      setError(data.error ?? 'Failed to save booking')
+      setError(saved.error ?? 'Failed to save booking')
       setSaving(false)
       return
     }
+
+    // For new bookings: fire a baseline price check in the background so we
+    // capture what the market rate looks like on day zero. This anchors future
+    // comparisons and helps detect drops even when a fuzzy hotel match is returned.
+    if (!bookingId && saved.id) {
+      fetch(`/api/bookings/${saved.id}/check?baseline=true`, { method: 'POST' }).catch(() => {})
+    }
+
     router.push(bookingId ? `/bookings/${bookingId}` : '/')
   }
 

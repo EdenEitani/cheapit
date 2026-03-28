@@ -18,13 +18,17 @@ export type PriceResult = {
   rawResponse: Record<string, unknown>   // full Serpapi JSON
 }
 
-async function doSearch(booking: Booking, withFilters: boolean): Promise<Record<string, unknown> | null> {
+async function doSearch(
+  booking: Booking,
+  withFilters: boolean,
+  adults?: number
+): Promise<Record<string, unknown> | null> {
   const params = new URLSearchParams({
     engine: 'google_hotels',
     q: `${booking.hotel_name} ${booking.hotel_city}`,
     check_in_date: booking.check_in,
     check_out_date: booking.check_out,
-    adults: String(booking.guests),
+    adults: String(adults ?? booking.guests),
     currency: booking.currency,
     api_key: process.env.SERPAPI_KEY ?? '',
   })
@@ -39,9 +43,6 @@ async function doSearch(booking: Booking, withFilters: boolean): Promise<Record<
 
   const data = await response.json()
 
-  // Two response shapes:
-  // 1. Property detail: data.type === "hotel" — data.featured_prices[]
-  // 2. List: data.properties[] — each with .prices[]
   const hasResults =
     (data.type === 'hotel' && Array.isArray(data.featured_prices) && data.featured_prices.length > 0) ||
     (Array.isArray(data.properties) && data.properties.length > 0)
@@ -49,47 +50,32 @@ async function doSearch(booking: Booking, withFilters: boolean): Promise<Record<
   return hasResults ? data : null
 }
 
-export async function fetchHotelPrice(booking: Booking): Promise<PriceResult | null> {
-  const nights = Math.max(
-    1,
-    Math.round(
-      (new Date(booking.check_out).getTime() - new Date(booking.check_in).getTime()) / 86400000
-    )
-  )
-
-  // Try with filters first, fall back without
-  let data = await doSearch(booking, true)
-  if (!data) data = await doSearch(booking, false)
-  if (!data) return null
-
-  const rawResponse = data as Record<string, unknown>
-
-  // --- Extract hotel identity ---
+function parseResult(
+  data: Record<string, unknown>,
+  booking: Booking,
+  nights: number
+): PriceResult {
   let hotelName: string
   let hotelLink: string
   let rawPrices: any[]
 
   if (data.type === 'hotel') {
-    // Property detail mode
     hotelName = (data.name as string) ?? booking.hotel_name
     hotelLink = (data.link as string) ?? ''
     rawPrices = (data.featured_prices as any[]) ?? []
   } else {
-    // List mode — take first property
     const prop = (data.properties as any[])[0]
     hotelName = prop.name ?? booking.hotel_name
     hotelLink = prop.link ?? ''
     rawPrices = prop.prices ?? prop.featured_prices ?? []
   }
 
-  // Loose name match
   const normalize = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '')
   const firstWord = (s: string) => normalize(s).slice(0, 6)
   const exactHotelMatch =
     normalize(hotelName).includes(firstWord(booking.hotel_name)) ||
     normalize(booking.hotel_name).includes(firstWord(hotelName))
 
-  // Build provider list
   const watchPlatforms = booking.watch_platforms.map((p) => p.toLowerCase())
 
   const allPrices: ProviderPrice[] = rawPrices
@@ -112,6 +98,31 @@ export async function fetchHotelPrice(booking: Booking): Promise<PriceResult | n
     cheapestWatched: watchedPrices[0] ?? null,
     cheapestAny: allPrices[0] ?? null,
     allPrices,
-    rawResponse,
+    rawResponse: data as Record<string, unknown>,
   }
+}
+
+/**
+ * Fetch hotel price, optionally using a different adult count (for normalization).
+ * Tries with filters first, falls back without — both attempts run against the
+ * same adult count.
+ */
+export async function fetchHotelPrice(
+  booking: Booking,
+  options?: { adultsOverride?: number }
+): Promise<PriceResult | null> {
+  const nights = Math.max(
+    1,
+    Math.round(
+      (new Date(booking.check_out).getTime() - new Date(booking.check_in).getTime()) / 86400000
+    )
+  )
+  const adults = options?.adultsOverride
+
+  // Try with filters first, fall back without
+  let data = await doSearch(booking, true, adults)
+  if (!data) data = await doSearch(booking, false, adults)
+  if (!data) return null
+
+  return parseResult(data, booking, nights)
 }
